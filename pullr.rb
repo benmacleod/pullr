@@ -39,6 +39,6 @@ end
 
 raise "Usage: pullr <issue-number>" unless ARGV.count == 1
 issue_number = ARGV[0]
-config = YAML::load(File.open('config.yml'))
+config = YAML::load(File.open(File.join(File.dirname(__FILE__), "config.yml")))
 pullr = Pullr.new(config)
 pullr.make_pull_request issue_number
