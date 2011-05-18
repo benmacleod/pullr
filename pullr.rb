@@ -3,56 +3,142 @@ require 'rubygems'
 require 'json'
 require 'yaml'
 require 'rest-client'
-require 'active_support'
+require 'active_support/all'
 require 'readline'
 
 class Pullr
-  ORGANIZATION = 'ImpactData'
-  REPO = 'Squawkbox'
-  MAINLINE = 'development'
+  DEBUG = true
+  CONFIG_FILE = "pullr.yml"
+
   def initialize(options = {})
-    login = options.delete('login')
+    @log = options.delete('log')
+    log "Initializing Pullr with - #{options.to_json}"
+    login = options.delete('login') or raise 'No GitHub login found'
     token = options.delete('token')
-    @repo = options.delete('repo') || REPO
-    @source_tree = options.delete('source_tree') || ORGANIZATION
-    @target_tree = options.delete('target_tree') || ORGANIZATION
-    @target_branch = options.delete('target_branch') || MAINLINE
-    credentials = token.nil? ? ":#{options.delete('password')}" : "/token:#{token}"
+    credentials = token.blank? ? ":#{options.delete('password')}" : "/token:#{token}"
+    raise "No GitHub credentials found" if credentials.empty? or credentials == ':'
+
+    @issue_number = options.delete('issue_number')
+    raise 'No issue number chosen' if @issue_number.blank?
+    @repo = options.delete('repo')
+    raise 'No repo chosen' if @repo.blank?
+    @target_tree = options.delete('name')
+    raise 'No target chosen' if @target_tree.blank?
+    @source_tree = options.delete('use_fork') ? login : @target_tree
+    @target_branch = options.delete('target_branch')
+    @target_branch = options.delete('mainline') if @target_branch.blank?
+    @target_branch = 'master' if @target_branch.blank?
+    @resolves_issue = !options.delete('resolves_issue').blank?
+
     base_url = "https://#{login}#{credentials}@github.com/api/v2/json/"
-    @rest_urls = {
+    @urls = {
+            :issues => {:view => "#{base_url}issues/show/#{@target_tree}/#{@repo}/#{@issue_number}"},
             :branches => {:list => "#{base_url}repos/show/#{@source_tree}/#{@repo}/branches"},
             :pulls => {:create => "#{base_url}pulls/#{@target_tree}/#{@repo}"},
     }
   end
-  def make_pull_request(issue_number)
-    branch_to_pull = "#{@source_tree}:#{find_branch issue_number}"
-    puts "Create a pull request \nfrom branch #{branch_to_pull} \nto branch   #{@target_tree}:#{@target_branch}\nIssue       #{issue_number}"
-    yes_no = Readline.readline('Is that OK? [yN] > ')
-    if !yes_no.empty? and yes_no.downcase == 'y'
-      url = @rest_urls[:pulls][:create]
-      options = {:pull => {:base => @target_branch, :head => branch_to_pull}}
-      puts "Posting to #{url.gsub(/\/\/.*@/,'/')} with options #{options.to_json}"
-      begin
-        pull_request_json = RestClient.post url, options
-        puts "Received the following reply: #{pull_request_json}"
-        pull_request = JSON.parse(pull_request_json)["pull"]
-        # TODO - add 'certificate of build', comments?
-      rescue e
-        puts "ERROR - #{e.message}"
-      end
+
+  def self.get_yes_no_answer(prompt, default_is_yes = true)
+    begin
+      answer = Readline.readline "#{prompt} [#{default_is_yes ? 'Yn' : 'yN'}] > "
+    end until answer.blank? or answer =~ /^y|n$/i
+    return default_is_yes if answer.blank?
+    if default_is_yes
+      !(answer =~ /n/i)
+    else
+      !(answer =~ /y/i)
     end
   end
+
+  def self.configure
+    config = YAML::load(File.open(File.join(File.dirname(__FILE__), CONFIG_FILE)))
+
+    repos = config.delete('repos')
+    raise 'No repos configured' if repos.blank?
+    case repos.count
+      when 1
+        repos[repos.keys.first]
+      else
+        repo_arr = repos.keys.sort.inject([]){|arr,key|arr << repos[key]; arr}
+        puts "The following repos are available"
+        range = (0..repo_arr.length - 1).to_a
+        repos.keys.sort.each_with_index {|repo, i| puts "\t#{i} - #{repo}"}
+        begin
+          repo_no = Readline.readline "Choose a number corresponding to the repo you want [#{range.join ', '}] > "
+        end until repo_no =~ /^\d+$/ and range.include? repo_no.to_i
+        repo_arr[repo_no.to_i]
+    end.each {|k,v| config[k] = v}
+
+    begin
+      issue_number = Readline.readline 'Issue Number > ', true
+    end while issue_number !~ /^\d+$/
+    config['issue_number'] = issue_number.to_i
+
+    config['resolves_issue'] = get_yes_no_answer "Does the pull request close an issue?"
+    config['use_fork'] =  get_yes_no_answer "Pull from your own fork?"
+
+    target_branch = Readline.readline "Pull to what branch? (press enter for mainline branch) > ", true
+    config['target_branch'] = target_branch unless target_branch.blank?
+    Pullr.new(config)
+  end
+
+  def do
+    puts "\nChecking issues and branches on GitHub...\n"
+    issue = find_issue
+    branch_to_pull = "#{@source_tree}:#{find_branch}"
+    puts "\nCREATE #{@resolves_issue ? 'ISSUE' : 'DEPLOYMENT'} PULL REQUEST"
+    puts "For issue   #{@issue_number}"
+    puts "from branch #{branch_to_pull}"
+    puts "to branch   #{@target_tree}:#{@target_branch}\n"
+    unless Pullr.get_yes_no_answer "Is that OK?", false
+      puts "EXITING - no pull request created\n"
+    else
+      url = @urls[:pulls][:create]
+      options = {:pull => {:base => @target_branch, :head => branch_to_pull}}
+      if @resolves_issue
+        options[:pull][:issue] = @issue_number
+      else
+        options[:pull][:title] = "DEPLOYMENT PULL REQUEST FOR #{@issue_number} - #{issue['title']}"
+        options[:pull][:body] = "##{@issue_number}"
+      end
+      do_api_call url, "pull", options
+      puts "CREATED PULL REQUEST!\n"
+      # TODO - add 'certificate of build', comments?
+    end
+  end
+
   private
-  def find_branch(issue_number)
-    branches_json = RestClient.get(@rest_urls[:branches][:list])
-    branches = JSON.parse(branches_json)["branches"].keys.select{|branch| /^#{issue_number}/ =~ branch}
-    raise "ERROR - #{branches.count} branches found" unless branches.count == 1
-    branches.first
+  def do_api_call(url, object_name, options = {})
+    reply = case options.blank?
+      when true
+        log "Getting #{url.gsub(/\/\/.*@/, '//')}"
+        RestClient.get(url)
+      else
+        log "Posting to #{url.gsub(/\/\/.*@/, '//')} with options #{options.to_json}"
+        RestClient.post(url, options) unless DEBUG
+    end
+    log "Received the following reply: #{reply}" unless reply.blank?
+    JSON.parse(reply)[object_name]
+  end
+
+  def find_issue
+    do_api_call @urls[:issues][:view], "issue"
+  end
+
+  def find_branch
+    all_branches = do_api_call(@urls[:branches][:list], "branches")
+    candidate_branches = all_branches.keys.select{|branch| /^#{@issue_number}/ =~ branch}
+    raise "#{candidate_branches.count} branches found" unless candidate_branches.count == 1
+    candidate_branches.first
+  end
+
+  def log(message)
+    puts message if @log
   end
 end
 
-raise "Usage: pullr <issue-number>" unless ARGV.count == 1
-issue_number = ARGV[0]
-config = YAML::load(File.open(File.join(File.dirname(__FILE__), "config.yml")))
-pullr = Pullr.new(config)
-pullr.make_pull_request issue_number
+begin
+  Pullr.configure.do
+rescue => e
+  puts "ERROR - #{e.message}"
+end
