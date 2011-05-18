@@ -7,7 +7,6 @@ require 'active_support/all'
 require 'readline'
 
 class Pullr
-  DEBUG = true
   CONFIG_FILE = "pullr.yml"
 
   def initialize(options = {})
@@ -38,20 +37,10 @@ class Pullr
     }
   end
 
-  def self.get_yes_no_answer(prompt, default_is_yes = true)
-    begin
-      answer = Readline.readline "#{prompt} [#{default_is_yes ? 'Yn' : 'yN'}] > "
-    end until answer.blank? or answer =~ /^y|n$/i
-    return default_is_yes if answer.blank?
-    if default_is_yes
-      !(answer =~ /n/i)
-    else
-      !(answer =~ /y/i)
-    end
-  end
-
   def self.configure
-    config = YAML::load(File.open(File.join(File.dirname(__FILE__), CONFIG_FILE)))
+    file_name = File.join(File.dirname(__FILE__), CONFIG_FILE)
+    log "Loading config from #{file_name}"
+    config = YAML::load(File.open(file_name))
 
     repos = config.delete('repos')
     raise 'No repos configured' if repos.blank?
@@ -60,11 +49,11 @@ class Pullr
         repos[repos.keys.first]
       else
         repo_arr = repos.keys.sort.inject([]){|arr,key|arr << repos[key]; arr}
-        puts "The following repos are available"
+        puts "\nThe following repos are available: "
         range = (0..repo_arr.length - 1).to_a
         repos.keys.sort.each_with_index {|repo, i| puts "\t#{i} - #{repo}"}
         begin
-          repo_no = Readline.readline "Choose a number corresponding to the repo you want [#{range.join ', '}] > "
+          repo_no = Readline.readline "\nChoose a number corresponding to the repo you want [#{range.join ', '}] > "
         end until repo_no =~ /^\d+$/ and range.include? repo_no.to_i
         repo_arr[repo_no.to_i]
     end.each {|k,v| config[k] = v}
@@ -85,24 +74,25 @@ class Pullr
   def do
     puts "\nChecking issues and branches on GitHub...\n"
     issue = find_issue
+    issue_title = "#{@issue_number} - #{issue['title']}"
     branch_to_pull = "#{@source_tree}:#{find_branch}"
     puts "\nCREATE #{@resolves_issue ? 'ISSUE' : 'DEPLOYMENT'} PULL REQUEST"
-    puts "For issue   #{@issue_number}"
+    puts "For issue   #{issue_title}"
     puts "from branch #{branch_to_pull}"
     puts "to branch   #{@target_tree}:#{@target_branch}\n"
     unless Pullr.get_yes_no_answer "Is that OK?", false
-      puts "EXITING - no pull request created\n"
+      puts "\nEXITING - no pull request created\n"
     else
       url = @urls[:pulls][:create]
       options = {:pull => {:base => @target_branch, :head => branch_to_pull}}
       if @resolves_issue
         options[:pull][:issue] = @issue_number
       else
-        options[:pull][:title] = "DEPLOYMENT PULL REQUEST FOR #{@issue_number} - #{issue['title']}"
+        options[:pull][:title] = "DEPLOYMENT PULL REQUEST FOR #{issue_title}"
         options[:pull][:body] = "##{@issue_number}"
       end
       do_api_call url, "pull", options
-      puts "CREATED PULL REQUEST!\n"
+      puts "\nCREATED PULL REQUEST!\n"
       # TODO - add 'certificate of build', comments?
     end
   end
@@ -115,7 +105,7 @@ class Pullr
         RestClient.get(url)
       else
         log "Posting to #{url.gsub(/\/\/.*@/, '//')} with options #{options.to_json}"
-        RestClient.post(url, options) unless DEBUG
+        RestClient.post(url, options)
     end
     log "Received the following reply: #{reply}" unless reply.blank?
     JSON.parse(reply)[object_name]
@@ -133,8 +123,21 @@ class Pullr
   end
 
   def log(message)
+    Pullr.log message
+  end
+
+  def self.log(message)
     puts message if @log
   end
+
+  def self.get_yes_no_answer(prompt, default_is_yes = true)
+    begin
+      answer = Readline.readline "#{prompt} [#{default_is_yes ? 'Yn' : 'yN'}] > "
+    end until answer.blank? or answer =~ /^y|n$/i
+    return default_is_yes if answer.blank?
+    answer !~ /n/i # return true if the answer is not 'n'
+  end
+
 end
 
 begin
