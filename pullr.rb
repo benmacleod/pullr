@@ -28,10 +28,15 @@ class Pullr
     @target_branch = options.delete('mainline') if @target_branch.blank?
     @target_branch = 'master' if @target_branch.blank?
     @resolves_issue = !options.delete('resolves_issue').blank?
+    @build_number = options.delete('build_number')
+    raise 'No build number' if @build_number.blank?
 
     base_url = "https://#{login}#{credentials}@github.com/api/v2/json/"
     @urls = {
-            :issues => {:view => "#{base_url}issues/show/#{@target_tree}/#{@repo}/#{@issue_number}"},
+            :issues => {:view => "#{base_url}issues/show/#{@target_tree}/#{@repo}/#{@issue_number}",
+                        :comments => "https://#{login}#{credentials}@api.github.com/repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}/comments",
+                        :labels => "https://#{login}#{credentials}@api.github.com/repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}/labels",
+            },
             :branches => {:list => "#{base_url}repos/show/#{@source_tree}/#{@repo}/branches"},
             :pulls => {:create => "#{base_url}pulls/#{@target_tree}/#{@repo}"},
     }
@@ -58,13 +63,11 @@ class Pullr
         repo_arr[repo_no.to_i]
     end.each {|k,v| config[k] = v}
 
-    begin
-      issue_number = Readline.readline 'Issue Number > ', true
-    end while issue_number !~ /^\d+$/
-    config['issue_number'] = issue_number.to_i
+    config['issue_number'] = get_int 'Issue Number'
+    config['build_number'] = get_int 'Build Number'
 
     config['resolves_issue'] = get_yes_no_answer "Does the pull request close an issue?"
-    config['use_fork'] =  get_yes_no_answer "Pull from your own fork?"
+    config['use_fork'] =  get_yes_no_answer "Pull from your own fork?", false
 
     target_branch = Readline.readline "Pull to what branch? (press enter for mainline branch) > ", true
     config['target_branch'] = target_branch unless target_branch.blank?
@@ -75,40 +78,68 @@ class Pullr
     puts "\nChecking issues and branches on GitHub...\n"
     issue = find_issue
     issue_title = "#{@issue_number} - #{issue['title']}"
+    puts "ISSUE #{issue_title}"
     branch_to_pull = "#{@source_tree}:#{find_branch}"
+    ensure_unique_issue_size
     puts "\nCREATE #{@resolves_issue ? 'ISSUE' : 'DEPLOYMENT'} PULL REQUEST"
     puts "For issue   #{issue_title}"
     puts "from branch #{branch_to_pull}"
     puts "to branch   #{@target_tree}:#{@target_branch}\n"
+    puts "Build #     #{@build_number}"
     unless Pullr.get_yes_no_answer "Is that OK?", false
       puts "\nEXITING - no pull request created\n"
     else
-      url = @urls[:pulls][:create]
-      options = {:pull => {:base => @target_branch, :head => branch_to_pull}}
+      # Add comment with 'build certificate'
+      do_api_call @urls[:issues][:comments], nil, {:body => "http://192.168.1.115:8111/viewLog.html?buildId=#{@build_number}"}.to_json
+
+      params = {:pull => {:base => @target_branch, :head => branch_to_pull}}
       if @resolves_issue
-        options[:pull][:issue] = @issue_number
+        params[:pull][:issue] = @issue_number
       else
-        options[:pull][:title] = "DEPLOYMENT PULL REQUEST FOR #{issue_title}"
-        options[:pull][:body] = "##{@issue_number}"
+        params[:pull][:title] = "DEPLOYMENT PULL REQUEST FOR #{issue_title}"
+        params[:pull][:body] = "##{@issue_number}"
       end
-      do_api_call url, "pull", options
+      do_api_call @urls[:pulls][:create], "pull", params
       puts "\nCREATED PULL REQUEST!\n"
-      # TODO - add 'certificate of build', comments?
     end
   end
 
   private
-  def do_api_call(url, object_name, options = {})
-    reply = case options.blank?
-      when true
-        log "Getting #{url.gsub(/\/\/.*@/, '//')}"
-        RestClient.get(url)
-      else
-        log "Posting to #{url.gsub(/\/\/.*@/, '//')} with options #{options.to_json}"
-        RestClient.post(url, options)
+  def do_api_call(url, object_name = nil, params = {}, options = {})
+    reply = if params.blank?
+      log "Getting #{url.gsub(/\/\/.*@/, '//')}"
+      RestClient.get(url)
+    elsif !options.delete(:put).blank?
+      log "Putting to #{url.gsub(/\/\/.*@/, '//')} with options #{params.to_json}"
+      RestClient.put(url, params)
+    else
+      log "Posting to #{url.gsub(/\/\/.*@/, '//')} with options #{params.to_json}"
+      RestClient.post(url, params)
     end
-    log "Received the following reply: #{reply}" unless reply.blank?
-    JSON.parse(reply)[object_name]
+    unless reply.blank?
+      log "Received the following reply: #{reply}"
+      if object_name # GitHub API v2 has an object name as the key for the returned values
+        JSON.parse(reply)[object_name]
+      else
+        JSON.parse(reply)
+      end
+    end
+  end
+
+  def ensure_unique_issue_size
+    labels = do_api_call(@urls[:issues][:labels])
+    sizes = labels.inject([]) do |array, label|
+      if label['name'] =~ /^size_(\d+)$/
+        array << $1.to_i
+      end
+      array
+    end
+    return sizes[0] if sizes.length == 1 and Pullr.get_yes_no_answer "Issue size is currently #{sizes[0]} - is that OK?"
+    size = Pullr.get_int "Choose an issue size from 1 to 10#{"(sizes #{sizes.join ','} are currently selected)" if sizes.length > 1}", 10
+    new_labels = labels.reject { |l| l['name'] =~ /^size/ }.select { |l| l['name'] }
+    new_labels << "size_#{size}"
+    do_api_call @urls[:issues][:labels], nil, new_labels, {:put => true}
+    size
   end
 
   def find_issue
@@ -136,6 +167,13 @@ class Pullr
     end until answer.blank? or answer =~ /^y|n$/i
     return default_is_yes if answer.blank?
     answer !~ /n/i # return true if the answer is not 'n'
+  end
+
+  def self.get_int(prompt, limit = nil)
+    begin
+      number = Readline.readline "#{prompt} > ", true
+    end while number !~ /^\d+$/ and (!limit or number.to_i <= limit)
+    number.to_i
   end
 
 end
