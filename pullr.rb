@@ -8,9 +8,8 @@ require 'readline'
 
 class Pullr
   CONFIG_FILE = "pullr.yml"
-
+  cattr_accessor :do_log
   def initialize(options = {})
-    @log = options.delete('log')
     log "Initializing Pullr with - #{options.to_json}"
     login = options.delete('login') or raise 'No GitHub login found'
     token = options.delete('token')
@@ -44,8 +43,9 @@ class Pullr
 
   def self.configure
     file_name = File.join(File.dirname(__FILE__), CONFIG_FILE)
-    log "Loading config from #{file_name}"
     config = YAML::load(File.open(file_name))
+    self.do_log = config.delete('log')
+    log "Loading config from #{file_name}"
 
     repos = config.delete('repos')
     raise 'No repos configured' if repos.blank?
@@ -63,7 +63,7 @@ class Pullr
         repo_arr[repo_no.to_i]
     end.each {|k,v| config[k] = v}
 
-    config['issue_number'] = get_int 'Issue Number'
+    config['issue_number'] = get_int 'Issue Number', guess_issue_number
     config['build_number'] = get_int 'Build Number'
 
     config['resolves_issue'] = get_yes_no_answer "Does the pull request close an issue?"
@@ -135,8 +135,8 @@ class Pullr
       array
     end
     return sizes[0] if sizes.length == 1 and Pullr.get_yes_no_answer "Issue size is currently #{sizes[0]} - is that OK?"
-    size = Pullr.get_int "Choose an issue size from 1 to 10#{"(sizes #{sizes.join ','} are currently selected)" if sizes.length > 1}", 10
-    new_labels = labels.reject { |l| l['name'] =~ /^size/ }.select { |l| l['name'] }
+    size = Pullr.get_int "Choose an issue size from 1 to 10#{"(sizes #{sizes.join ','} are currently selected)" if sizes.length > 1}", nil, 10
+    new_labels = labels.reject { |l| l['name'] =~ /^size/ }.map { |l| l['name'] }
     new_labels << "size_#{size}"
     do_api_call @urls[:issues][:labels], nil, new_labels, {:put => true}
     size
@@ -158,20 +158,27 @@ class Pullr
   end
 
   def self.log(message)
-    puts message if @log
+    puts message if self.do_log
+  end
+
+  def self.guess_issue_number
+    # grab any integer appearing after a slash in the output of `git symbolic-ref HEAD`,
+    # which should be something like "refs/heads/999-some-big-issue\n"
+    $1 if `git symbolic-ref HEAD 2> /dev/null` =~ /\/(\d+)/
   end
 
   def self.get_yes_no_answer(prompt, default_is_yes = true)
     begin
-      answer = Readline.readline "#{prompt} [#{default_is_yes ? 'Yn' : 'yN'}] > "
+      answer = Readline.readline "#{prompt} [#{default_is_yes ? 'Y/n' : 'y/N'}] > "
     end until answer.blank? or answer =~ /^y|n$/i
     return default_is_yes if answer.blank?
     answer !~ /n/i # return true if the answer is not 'n'
   end
 
-  def self.get_int(prompt, limit = nil)
+  def self.get_int(prompt, default = nil, limit = nil)
     begin
-      number = Readline.readline "#{prompt} > ", true
+      number = Readline.readline("#{prompt}#{" [#{default}]" if default} > ", true)
+      number = default if default and number.blank?
     end while number !~ /^\d+$/ and (!limit or number.to_i <= limit)
     number.to_i
   end
