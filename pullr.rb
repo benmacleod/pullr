@@ -4,7 +4,9 @@ require 'json'
 require 'yaml'
 require 'rest-client'
 require 'active_support/all'
+require 'action_mailer'
 require 'readline'
+require 'net/smtp'
 
 class Pullr
   CONFIG_FILE = "pullr.yml"
@@ -29,6 +31,9 @@ class Pullr
     @resolves_issue = !options.delete('resolves_issue').blank?
     @build_number = options.delete('build_number')
     raise 'No build number' if @build_number.blank?
+
+    @smtp_options = options.delete('smtp')
+    @email_options = options.delete('email')
 
     base_url = "https://#{login}#{credentials}@github.com/api/v2/json/"
     @urls = {
@@ -101,6 +106,21 @@ class Pullr
       end
       do_api_call @urls[:pulls][:create], "pull", params
       puts "\nCREATED PULL REQUEST!\n"
+
+      if @smtp_options and @email_options
+        puts "\nSending notification to #{@email_options["to"]}...\n"
+        ActionMailer::Base.smtp_settings = {
+                :enable_starttls_auto => true,
+                :address =>  @smtp_options["server"],
+                :port => @smtp_options.delete("port") || 25,
+                :domain => @smtp_options["domain"],
+                :authentication => :plain,
+                :user_name => @smtp_options["user_name"],
+                :password => @smtp_options["password"]
+        }
+        PullrMailer.deliver_notification(@email_options["from"], @email_options["to"], "PULLR - Pull Request Created for #{issue_title}", "Please review at https://github.com/#{@target_tree}/#{@repo}/pulls/#{@issue_number}")
+      end
+
     end
   end
 
@@ -183,6 +203,15 @@ class Pullr
     number.to_i
   end
 
+end
+
+class PullrMailer < ActionMailer::Base
+  def notification(from, to, subject, content)
+    recipients to
+    from from
+    subject subject
+    body content
+  end
 end
 
 begin
