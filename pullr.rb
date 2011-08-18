@@ -118,7 +118,7 @@ class Pullr
                 :user_name => @smtp_options["user_name"],
                 :password => @smtp_options["password"]
         }
-        PullrMailer.deliver_notification(@email_options["from"], @email_options["to"], "PULLR - Pull Request Created for #{issue_title}", "Please review at https://github.com/#{@target_tree}/#{@repo}/pulls/#{@issue_number}")
+        PullrMailer.deliver_notification(@email_options["from"], @email_options["to"], "PULLR - Pull Request Created for #{issue_title}", "Please review at https://github.com/#{@target_tree}/#{@repo}/pull/#{@issue_number}")
       end
 
     end
