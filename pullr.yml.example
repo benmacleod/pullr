@@ -1,0 +1,23 @@
+login: <github username>
+password: <github password>
+log: false
+
+repos:
+  <repo label>:
+    name: <github username>
+    repo: <github repo>
+    mainline: <github master branch>
+
+smtp:
+  server: <smtp host>
+  domain: <google apps domain>
+  user_name: <smtp username>
+  password: <smtp password>
+  port: <smtp port>
+
+email:
+  to: <email to>
+  from: <email from>
+
+teamcity:
+  host: <teamcity host>
