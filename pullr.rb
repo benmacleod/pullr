@@ -7,6 +7,7 @@ require 'active_support/all'
 require 'action_mailer'
 require 'readline'
 require 'net/smtp'
+require 'teamcity-client'
 
 class Pullr
   CONFIG_FILE = "pullr.yml"
@@ -31,9 +32,11 @@ class Pullr
     @resolves_issue = !options.delete('resolves_issue').blank?
     @build_number = options.delete('build_number')
     raise 'No build number' if @build_number.blank?
+    @check_build = options.delete('check_build')
 
     @smtp_options = options.delete('smtp')
     @email_options = options.delete('email')
+    @teamcity_options = options.delete('teamcity')
 
     base_url = "https://#{login}#{credentials}@github.com/api/v2/json/"
     @urls = {
@@ -70,7 +73,7 @@ class Pullr
 
     config['issue_number'] = get_int 'Issue Number', guess_issue_number
     config['build_number'] = get_int 'Build Number'
-
+    config['check_build'] = get_yes_no_answer "Check TeamCity for new build errors?"
     config['resolves_issue'] = get_yes_no_answer "Does the pull request close an issue?"
     config['use_fork'] =  get_yes_no_answer "Pull from your own fork?", false
 
@@ -94,8 +97,25 @@ class Pullr
     unless Pullr.get_yes_no_answer "Is that OK?", false
       puts "\nEXITING - no pull request created\n"
     else
+
+      if @check_build
+        puts "\nChecking TeamCity build for new errors...\n"
+        teamcity = TeamCityClient.new @teamcity_options['host']
+        errors = teamcity.build_errors @build_number
+        if errors > 0
+          puts "\nEXITING - #{errors} new error(s)\n"
+          return
+        else
+          puts "\nNo errors found!\n"
+        end
+      else
+        puts "\nSKIPPING BUILD CHECK FOR ERRORS\n"
+      end
+
+      return
+
       # Add comment with 'build certificate'
-      do_api_call @urls[:issues][:comments], nil, {:body => "http://192.168.1.115:8111/viewLog.html?buildId=#{@build_number}"}.to_json
+      do_api_call @urls[:issues][:comments], nil, {:body => "http://#{@teamcity_options['host']}/viewLog.html?buildId=#{@build_number}"}.to_json
 
       params = {:pull => {:base => @target_branch, :head => branch_to_pull}}
       if @resolves_issue
