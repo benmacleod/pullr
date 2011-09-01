@@ -112,8 +112,6 @@ class Pullr
         puts "\nSKIPPING BUILD CHECK FOR ERRORS\n"
       end
 
-      return
-
       # Add comment with 'build certificate'
       do_api_call @urls[:issues][:comments], nil, {:body => "http://#{@teamcity_options['host']}/viewLog.html?buildId=#{@build_number}"}.to_json
 
