@@ -25,11 +25,11 @@ class Pullr
     raise 'No repo chosen' if @repo.blank?
     @target_tree = options.delete('name')
     raise 'No target chosen' if @target_tree.blank?
-    @source_tree = options.delete('use_fork') ? login : @target_tree
+    #@source_tree = options.delete('use_fork') ? login : @target_tree
+    @source_tree = @target_tree
     @target_branch = options.delete('target_branch')
     @target_branch = options.delete('mainline') if @target_branch.blank?
     @target_branch = 'master' if @target_branch.blank?
-    @resolves_issue = !options.delete('resolves_issue').blank?
     @build_number = options.delete('build_number')
     raise 'No build number' if @build_number.blank?
     @check_build = options.delete('check_build')
@@ -74,8 +74,7 @@ class Pullr
     config['issue_number'] = get_int 'Issue Number', guess_issue_number
     config['build_number'] = get_int 'Build Number'
     config['check_build'] = get_yes_no_answer "Check TeamCity for new build errors?"
-    config['resolves_issue'] = get_yes_no_answer "Does the pull request close an issue?"
-    config['use_fork'] =  get_yes_no_answer "Pull from your own fork?", false
+    #config['use_fork'] =  get_yes_no_answer "Pull from your own fork?", false
 
     target_branch = Readline.readline "Pull to what branch? (press enter for mainline branch) > ", true
     config['target_branch'] = target_branch unless target_branch.blank?
@@ -88,8 +87,7 @@ class Pullr
     issue_title = "#{@issue_number} - #{issue['title']}"
     puts "ISSUE #{issue_title}"
     branch_to_pull = "#{@source_tree}:#{find_branch}"
-    ensure_unique_issue_size
-    puts "\nCREATE #{@resolves_issue ? 'ISSUE' : 'DEPLOYMENT'} PULL REQUEST"
+    puts "\nCREATE ISSUE PULL REQUEST"
     puts "For issue   #{issue_title}"
     puts "from branch #{branch_to_pull}"
     puts "to branch   #{@target_tree}:#{@target_branch}\n"
@@ -115,13 +113,7 @@ class Pullr
       # Add comment with 'build certificate'
       do_api_call @urls[:issues][:comments], nil, {:body => "http://#{@teamcity_options['host']}/viewLog.html?buildId=#{@build_number}"}.to_json
 
-      params = {:pull => {:base => @target_branch, :head => branch_to_pull}}
-      if @resolves_issue
-        params[:pull][:issue] = @issue_number
-      else
-        params[:pull][:title] = "DEPLOYMENT PULL REQUEST FOR #{issue_title}"
-        params[:pull][:body] = "##{@issue_number}"
-      end
+      params = {:pull => {:base => @target_branch, :head => branch_to_pull, :issue => @issue_number}}
       do_api_call @urls[:pulls][:create], "pull", params
       puts "\nCREATED PULL REQUEST!\n"
 
@@ -162,22 +154,6 @@ class Pullr
         JSON.parse(reply)
       end
     end
-  end
-
-  def ensure_unique_issue_size
-    labels = do_api_call(@urls[:issues][:labels])
-    sizes = labels.inject([]) do |array, label|
-      if label['name'] =~ /^size_(\d+)$/
-        array << $1.to_i
-      end
-      array
-    end
-    return sizes[0] if sizes.length == 1 and Pullr.get_yes_no_answer "Issue size is currently #{sizes[0]} - is that OK?"
-    size = Pullr.get_int "Choose an issue size from 1 to 10#{"(sizes #{sizes.join ','} are currently selected)" if sizes.length > 1}", nil, 10
-    new_labels = labels.reject { |l| l['name'] =~ /^size/ }.map { |l| l['name'] }
-    new_labels << "size_#{size}"
-    do_api_call @urls[:issues][:labels], nil, new_labels, {:put => true}
-    size
   end
 
   def find_issue
