@@ -13,39 +13,45 @@ class Pullr
   CONFIG_FILE = "pullr.yml"
   cattr_accessor :do_log
   def initialize(options = {})
+
     log "Initializing Pullr with - #{options.to_json}"
+
     login = options.delete('login') or raise 'No GitHub login found'
     token = options.delete('token')
+
     credentials = token.blank? ? ":#{options.delete('password')}" : "/token:#{token}"
     raise "No GitHub credentials found" if credentials.empty? or credentials == ':'
 
     @issue_number = options.delete('issue_number')
     raise 'No issue number chosen' if @issue_number.blank?
+
     @repo = options.delete('repo')
     raise 'No repo chosen' if @repo.blank?
+
     @target_tree = options.delete('name')
     raise 'No target chosen' if @target_tree.blank?
-    #@source_tree = options.delete('use_fork') ? login : @target_tree
+
     @source_tree = @target_tree
     @target_branch = options.delete('target_branch')
     @target_branch = options.delete('mainline') if @target_branch.blank?
     @target_branch = 'master' if @target_branch.blank?
+
     @build_number = options.delete('build_number')
     raise 'No build number' if @build_number.blank?
-    @check_build = options.delete('check_build')
 
+    @check_build = options.delete('check_build')
     @smtp_options = options.delete('smtp')
     @email_options = options.delete('email')
     @teamcity_options = options.delete('teamcity')
 
-    base_url = "https://#{login}#{credentials}@github.com/api/v2/json/"
+    base_url = "https://#{login}#{credentials}@api.github.com/"
     @urls = {
-            :issues => {:view => "#{base_url}issues/show/#{@target_tree}/#{@repo}/#{@issue_number}",
-                        :comments => "https://#{login}#{credentials}@api.github.com/repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}/comments",
-                        :labels => "https://#{login}#{credentials}@api.github.com/repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}/labels",
+            :issues => {:view => "#{base_url}repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}",
+                        :comments => "#{base_url}repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}/comments",
+                        :labels => "#{base_url}repos/#{@target_tree}/#{@repo}/issues/#{@issue_number}/labels",
             },
-            :branches => {:list => "#{base_url}repos/show/#{@source_tree}/#{@repo}/branches"},
-            :pulls => {:create => "#{base_url}pulls/#{@target_tree}/#{@repo}"},
+            :branches => {:list => "#{base_url}repos/#{@source_tree}/#{@repo}/branches"},
+            :pulls => {:create => "#{base_url}repos/#{@target_tree}/#{@repo}/pulls"},
     }
   end
 
@@ -82,6 +88,7 @@ class Pullr
   end
 
   def do
+
     puts "\nChecking issues and branches on GitHub...\n"
     issue = find_issue
     issue_title = "#{@issue_number} - #{issue['title']}"
@@ -113,8 +120,10 @@ class Pullr
       # Add comment with 'build certificate'
       do_api_call @urls[:issues][:comments], nil, {:body => "http://#{@teamcity_options['host']}/viewLog.html?buildId=#{@build_number}"}.to_json
 
-      params = {:pull => {:base => @target_branch, :head => branch_to_pull, :issue => @issue_number}}
-      do_api_call @urls[:pulls][:create], "pull", params
+      # create the pull request, linked to the issue
+      params = {:base => @target_branch, :head => branch_to_pull, :issue => @issue_number}
+      do_api_call @urls[:pulls][:create], nil, params.to_json
+
       puts "\nCREATED PULL REQUEST!\n"
 
       if @smtp_options and @email_options
@@ -157,14 +166,14 @@ class Pullr
   end
 
   def find_issue
-    do_api_call @urls[:issues][:view], "issue"
+    do_api_call @urls[:issues][:view]
   end
 
   def find_branch
-    all_branches = do_api_call(@urls[:branches][:list], "branches")
-    candidate_branches = all_branches.keys.select{|branch| /^#{@issue_number}/ =~ branch}
+    all_branches = do_api_call(@urls[:branches][:list])
+    candidate_branches = all_branches.select{|branch| /^#{@issue_number}/ =~ branch["name"]}
     raise "#{candidate_branches.count} branches found" unless candidate_branches.count == 1
-    candidate_branches.first
+    candidate_branches.first["name"]
   end
 
   def log(message)
